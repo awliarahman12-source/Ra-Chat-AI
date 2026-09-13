@@ -63,7 +63,7 @@ export function ModelSelector() {
       </button>
 
       {open && (
-        <div className="absolute bottom-full left-0 mb-2 w-72 max-h-96 overflow-y-auto rounded-xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 shadow-xl z-50 animate-fadeIn">
+        <div className="absolute top-full right-0 mt-2 w-72 max-h-96 overflow-y-auto rounded-xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 shadow-xl z-50 animate-fadeIn">
           <div className="p-1.5">
             {activeProviders.map((provider) => (
               <div key={provider.id} className="mb-1">
