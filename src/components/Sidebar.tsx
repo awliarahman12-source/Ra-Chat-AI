@@ -70,7 +70,7 @@ export function Sidebar() {
     <div className="flex flex-col h-full bg-neutral-50 dark:bg-neutral-900 border-r border-neutral-200 dark:border-neutral-800 w-72">
       {/* Header */}
       <div className="p-3 flex items-center justify-between">
-        <span className="text-lg font-bold text-neutral-800 dark:text-neutral-100 tracking-tight">AI Chat</span>
+        <span className="text-lg font-bold text-neutral-800 dark:text-neutral-100 tracking-tight">Ra Chat AI</span>
         <button
           onClick={() => setSidebarOpen(false)}
           className="lg:hidden p-1.5 rounded-lg hover:bg-neutral-200 dark:hover:bg-neutral-800 text-neutral-500"
