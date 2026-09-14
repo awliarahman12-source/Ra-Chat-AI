@@ -1,5 +1,18 @@
 export type Role = 'user' | 'assistant' | 'system';
 
+export interface ToolCall {
+  id: string;
+  toolName: string;
+  arguments: Record<string, unknown>;
+}
+
+export interface ToolResult {
+  toolCallId: string;
+  toolName: string;
+  result: unknown;
+  error?: string;
+}
+
 export interface Message {
   id: string;
   role: Role;
@@ -8,6 +21,10 @@ export interface Message {
   providerId?: string;
   model?: string;
   error?: boolean;
+
+  // Plugin / Tool execution
+  toolCalls?: ToolCall[];
+  toolResults?: ToolResult[];
 }
 
 export type ProviderType = 'openai' | 'anthropic' | 'gemini';
@@ -45,3 +62,5 @@ export interface ToastMessage {
   type: 'success' | 'error' | 'info';
   message: string;
 }
+
+export * from './attachment';

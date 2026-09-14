@@ -1,7 +1,15 @@
 import type { ToolDefinition } from '@/plugins/types';
+import type { Message, Provider, AppSettings } from '@/types';
+
+type MessageContentPart = Record<string, unknown>;
+
+type ApiMessage = {
+  role: string;
+  content: string | MessageContentPart[];
+};
 
 interface ChatRequestOptions {
-  messages: Record<string, unknown>[];
+  messages: ApiMessage[];
   provider: Provider;
   model: string;
   settings: AppSettings;
@@ -10,34 +18,38 @@ interface ChatRequestOptions {
 }
 
 function friendlyNetworkError(): Error {
-  return new Error('Network error: Unable to reach the AI provider. Check your internet connection or base URL.');
+  return new Error(
+    'Network error: Unable to reach the AI provider. Check your internet connection or base URL.',
+  );
 }
 
-/**
- * Calls `fetch` directly first. If that fails at the network level (which is
- * the symptom of a CORS block — the browser refuses to even send the
- * request), retries once through our own same-origin serverless proxy
- * (`/api/ai-proxy`, only present when deployed on Vercel). Real HTTP error
- * responses (401, 429, 500, ...) are NOT retried here — those come back as
- * normal Response objects, not thrown errors, so they skip straight to the
- * caller's own error handling.
- */
-async function fetchWithCorsFallback(url: string, options: RequestInit): Promise<Response> {
+async function fetchWithCorsFallback(
+  url: string,
+  options: RequestInit,
+): Promise<Response> {
   try {
     return await fetch(url, options);
-  } catch (err) {
+  } catch (error) {
     const signal = options.signal as AbortSignal | undefined;
-    if (signal?.aborted) throw err;
+
+    if (signal?.aborted) {
+      throw error;
+    }
 
     try {
       return await fetch('/api/ai-proxy', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+        },
         body: JSON.stringify({
           url,
           method: options.method || 'GET',
           headers: options.headers,
-          body: typeof options.body === 'string' ? JSON.parse(options.body) : undefined,
+          body:
+            typeof options.body === 'string'
+              ? JSON.parse(options.body)
+              : undefined,
         }),
         signal,
       });
@@ -49,53 +61,187 @@ async function fetchWithCorsFallback(url: string, options: RequestInit): Promise
 
 function friendlyStatusError(status: number, fallback: string): Error {
   if (status === 401 || status === 403) {
-    return new Error('Authentication failed: Check your API key for this provider.');
+    return new Error(
+      'Authentication failed: Check your API key for this provider.',
+    );
   }
+
   if (status === 429) {
-    return new Error('Rate limit exceeded: Too many requests. Please try again in a moment.');
+    return new Error(
+      'Rate limit exceeded: Too many requests. Please try again in a moment.',
+    );
   }
+
   return new Error(fallback);
 }
 
-async function extractErrorMessage(response: Response, fallbackPrefix: string): Promise<string> {
+async function extractErrorMessage(
+  response: Response,
+  fallbackPrefix: string,
+): Promise<string> {
   try {
     const errorData = await response.json();
-    const msg = errorData?.error?.message || errorData?.message;
-    if (msg) return msg;
+    const message = errorData?.error?.message || errorData?.message;
+
+    if (message) {
+      return message;
+    }
   } catch {
     try {
       const text = await response.text();
-      if (text) return text.slice(0, 300);
+
+      if (text) {
+        return text.slice(0, 300);
+      }
     } catch {
-      // ignore
+      // Ignore malformed response errors.
     }
   }
+
   return `${fallbackPrefix} (status ${response.status})`;
 }
 
-/**
- * Splits the OpenAI-style flat message list (which may include a leading
- * `system` message) into a system prompt string plus user/assistant turns.
- * Anthropic and Gemini both require the system prompt to be passed
- * separately rather than as a message with role "system".
- */
-function splitSystemPrompt(messages: { role: string; content: string }[]) {
-  const systemParts: string[] = [];
-  const rest: { role: string; content: string }[] = [];
-  for (const m of messages) {
-    if (m.role === 'system') {
-      systemParts.push(m.content);
-    } else {
-      rest.push(m);
-    }
-  }
-  return { system: systemParts.join('\n\n'), rest };
+function isContentParts(
+  content: string | MessageContentPart[],
+): content is MessageContentPart[] {
+  return Array.isArray(content);
 }
 
-// ---------- OpenAI-compatible (OpenAI, OpenRouter, Groq, local LLM servers, etc.) ----------
+function getTextFromContent(
+  content: string | MessageContentPart[],
+): string {
+  if (typeof content === 'string') {
+    return content;
+  }
+
+  return content
+    .filter((part) => part.type === 'text')
+    .map((part) => String(part.text || ''))
+    .join('\n');
+}
+
+function splitSystemPrompt(messages: ApiMessage[]) {
+  const systemParts: string[] = [];
+  const rest: ApiMessage[] = [];
+
+  for (const message of messages) {
+    if (message.role === 'system') {
+      systemParts.push(getTextFromContent(message.content));
+    } else {
+      rest.push(message);
+    }
+  }
+
+  return {
+    system: systemParts.join('\n\n'),
+    rest,
+  };
+}
+
+function toAnthropicContent(
+  content: string | MessageContentPart[],
+): string | MessageContentPart[] {
+  if (typeof content === 'string') {
+    return content;
+  }
+
+  const parts: MessageContentPart[] = [];
+
+  for (const part of content) {
+    if (part.type === 'text' && typeof part.text === 'string') {
+      parts.push({
+        type: 'text',
+        text: part.text,
+      });
+      continue;
+    }
+
+    if (
+      part.type === 'image_url' &&
+      typeof part.image_url === 'object' &&
+      part.image_url !== null
+    ) {
+      const imageUrl = part.image_url as { url?: string };
+      const dataUrl = imageUrl.url;
+
+      if (!dataUrl || !dataUrl.startsWith('data:image/')) {
+        continue;
+      }
+
+      const match = dataUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+
+      if (!match) {
+        continue;
+      }
+
+      parts.push({
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: match[1],
+          data: match[2],
+        },
+      });
+    }
+  }
+
+  return parts;
+}
+
+function toGeminiParts(
+  content: string | MessageContentPart[],
+): MessageContentPart[] {
+  if (typeof content === 'string') {
+    return [{ text: content }];
+  }
+
+  const parts: MessageContentPart[] = [];
+
+  for (const part of content) {
+    if (part.type === 'text' && typeof part.text === 'string') {
+      parts.push({
+        text: part.text,
+      });
+      continue;
+    }
+
+    if (
+      part.type === 'image_url' &&
+      typeof part.image_url === 'object' &&
+      part.image_url !== null
+    ) {
+      const imageUrl = part.image_url as { url?: string };
+      const dataUrl = imageUrl.url;
+
+      if (!dataUrl || !dataUrl.startsWith('data:image/')) {
+        continue;
+      }
+
+      const match = dataUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+
+      if (!match) {
+        continue;
+      }
+
+      parts.push({
+        inlineData: {
+          mimeType: match[1],
+          data: match[2],
+        },
+      });
+    }
+  }
+
+  if (parts.length === 0) {
+    return [{ text: 'Analyze the attached content.' }];
+  }
+
+  return parts;
+}
 
 async function streamOpenAI(opts: ChatRequestOptions): Promise<void> {
   const { messages, provider, model, settings, signal, onToken } = opts;
+
   const url = `${provider.baseUrl.replace(/\/$/, '')}/chat/completions`;
 
   const body = {
@@ -107,28 +253,37 @@ async function streamOpenAI(opts: ChatRequestOptions): Promise<void> {
   };
 
   let response: Response;
+
   try {
     response = await fetchWithCorsFallback(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(provider.apiKey ? { Authorization: `Bearer ${provider.apiKey}` } : {}),
+        ...(provider.apiKey
+          ? { Authorization: `Bearer ${provider.apiKey}` }
+          : {}),
       },
       body: JSON.stringify(body),
       signal,
     });
-  } catch (err) {
-    if (signal.aborted) return;
-    throw err instanceof Error ? err : friendlyNetworkError();
+  } catch (error) {
+    if (signal.aborted) {
+      return;
+    }
+
+    throw error instanceof Error ? error : friendlyNetworkError();
   }
 
   if (!response.ok) {
-    const msg = await extractErrorMessage(response, 'Request failed');
-    throw friendlyStatusError(response.status, msg);
+    const message = await extractErrorMessage(response, 'Request failed');
+    throw friendlyStatusError(response.status, message);
   }
 
   const reader = response.body?.getReader();
-  if (!reader) throw new Error('No response body received from the server.');
+
+  if (!reader) {
+    throw new Error('No response body received from the server.');
+  }
 
   const decoder = new TextDecoder();
   let buffer = '';
@@ -136,25 +291,38 @@ async function streamOpenAI(opts: ChatRequestOptions): Promise<void> {
   try {
     while (true) {
       const { done, value } = await reader.read();
-      if (done) break;
+
+      if (done) {
+        break;
+      }
 
       buffer += decoder.decode(value, { stream: true });
+
       const lines = buffer.split('\n');
       buffer = lines.pop() || '';
 
       for (const line of lines) {
         const trimmed = line.trim();
-        if (!trimmed || !trimmed.startsWith('data:')) continue;
+
+        if (!trimmed || !trimmed.startsWith('data:')) {
+          continue;
+        }
 
         const data = trimmed.slice(5).trim();
-        if (data === '[DONE]') return;
+
+        if (data === '[DONE]') {
+          return;
+        }
 
         try {
           const parsed = JSON.parse(data);
           const token = parsed.choices?.[0]?.delta?.content;
-          if (token) onToken(token);
+
+          if (typeof token === 'string' && token) {
+            onToken(token);
+          }
         } catch {
-          // Skip malformed chunks
+          // Skip malformed streaming chunks.
         }
       }
     }
@@ -165,34 +333,49 @@ async function streamOpenAI(opts: ChatRequestOptions): Promise<void> {
 
 async function fetchOpenAIModels(provider: Provider): Promise<string[]> {
   const url = `${provider.baseUrl.replace(/\/$/, '')}/models`;
+
   const response = await fetchWithCorsFallback(url, {
-    headers: provider.apiKey ? { Authorization: `Bearer ${provider.apiKey}` } : {},
+    headers: provider.apiKey
+      ? { Authorization: `Bearer ${provider.apiKey}` }
+      : {},
   });
-  if (!response.ok) throw new Error(await extractErrorMessage(response, 'Failed to fetch models'));
+
+  if (!response.ok) {
+    throw new Error(
+      await extractErrorMessage(response, 'Failed to fetch models'),
+    );
+  }
+
   const data = await response.json();
+
   const models: string[] = (data.data || data.models || [])
-    .map((m: { id?: string; name?: string }) => m.id || m.name || '')
+    .map((model: { id?: string; name?: string }) => model.id || model.name || '')
     .filter(Boolean);
+
   return models.sort();
 }
 
-// ---------- Anthropic (Claude) ----------
-
 async function streamAnthropic(opts: ChatRequestOptions): Promise<void> {
   const { messages, provider, model, settings, signal, onToken } = opts;
+
   const url = `${provider.baseUrl.replace(/\/$/, '')}/messages`;
+
   const { system, rest } = splitSystemPrompt(messages);
 
   const body = {
     model,
     system: system || undefined,
-    messages: rest.map((m) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content })),
+    messages: rest.map((message) => ({
+      role: message.role === 'assistant' ? 'assistant' : 'user',
+      content: toAnthropicContent(message.content),
+    })),
     temperature: settings.temperature,
     max_tokens: settings.maxTokens,
     stream: true,
   };
 
   let response: Response;
+
   try {
     response = await fetch(url, {
       method: 'POST',
@@ -206,17 +389,23 @@ async function streamAnthropic(opts: ChatRequestOptions): Promise<void> {
       signal,
     });
   } catch {
-    if (signal.aborted) return;
+    if (signal.aborted) {
+      return;
+    }
+
     throw friendlyNetworkError();
   }
 
   if (!response.ok) {
-    const msg = await extractErrorMessage(response, 'Request failed');
-    throw friendlyStatusError(response.status, msg);
+    const message = await extractErrorMessage(response, 'Request failed');
+    throw friendlyStatusError(response.status, message);
   }
 
   const reader = response.body?.getReader();
-  if (!reader) throw new Error('No response body received from the server.');
+
+  if (!reader) {
+    throw new Error('No response body received from the server.');
+  }
 
   const decoder = new TextDecoder();
   let buffer = '';
@@ -224,30 +413,60 @@ async function streamAnthropic(opts: ChatRequestOptions): Promise<void> {
   try {
     while (true) {
       const { done, value } = await reader.read();
-      if (done) break;
+
+      if (done) {
+        break;
+      }
 
       buffer += decoder.decode(value, { stream: true });
+
       const lines = buffer.split('\n');
       buffer = lines.pop() || '';
 
       for (const line of lines) {
         const trimmed = line.trim();
-        if (!trimmed || !trimmed.startsWith('data:')) continue;
+
+        if (!trimmed || !trimmed.startsWith('data:')) {
+          continue;
+        }
 
         const data = trimmed.slice(5).trim();
-        if (!data) continue;
 
-        let parsed: { type?: string; delta?: { type?: string; text?: string }; error?: { message?: string } } | null = null;
+        if (!data) {
+          continue;
+        }
+
+        let parsed:
+          | {
+              type?: string;
+              delta?: {
+                type?: string;
+                text?: string;
+              };
+              error?: {
+                message?: string;
+              };
+            }
+          | null = null;
+
         try {
           parsed = JSON.parse(data);
         } catch {
-          continue; // Skip malformed / non-JSON chunks
+          continue;
         }
 
-        if (parsed?.type === 'content_block_delta' && parsed.delta?.type === 'text_delta') {
-          onToken(parsed.delta.text as string);
-        } else if (parsed?.type === 'error') {
-          throw new Error(parsed.error?.message || 'Anthropic returned an error.');
+        if (
+          parsed?.type === 'content_block_delta' &&
+          parsed.delta?.type === 'text_delta' &&
+          parsed.delta.text
+        ) {
+          onToken(parsed.delta.text);
+        }
+
+        if (parsed?.type === 'error') {
+          throw new Error(
+            parsed.error?.message || 'Anthropic returned an error.',
+          );
         }
       }
     }
@@ -258,6 +477,7 @@ async function streamAnthropic(opts: ChatRequestOptions): Promise<void> {
 
 async function fetchAnthropicModels(provider: Provider): Promise<string[]> {
   const url = `${provider.baseUrl.replace(/\/$/, '')}/models`;
+
   const response = await fetch(url, {
     headers: {
       'x-api-key': provider.apiKey,
@@ -265,26 +485,43 @@ async function fetchAnthropicModels(provider: Provider): Promise<string[]> {
       'anthropic-dangerous-direct-browser-access': 'true',
     },
   });
-  if (!response.ok) throw new Error(await extractErrorMessage(response, 'Failed to fetch models'));
+
+  if (!response.ok) {
+    throw new Error(
+      await extractErrorMessage(response, 'Failed to fetch models'),
+    );
+  }
+
   const data = await response.json();
-  const models: string[] = (data.data || []).map((m: { id?: string }) => m.id || '').filter(Boolean);
+
+  const models: string[] = (data.data || [])
+    .map((model: { id?: string }) => model.id || '')
+    .filter(Boolean);
+
   return models.sort();
 }
 
-// ---------- Google Gemini ----------
-
 async function streamGemini(opts: ChatRequestOptions): Promise<void> {
   const { messages, provider, model, settings, signal, onToken } = opts;
-  const base = provider.baseUrl.replace(/\/$/, '');
-  const url = `${base}/models/${model}:streamGenerateContent?alt=sse&key=${encodeURIComponent(provider.apiKey)}`;
+
+  const baseUrl = provider.baseUrl.replace(/\/$/, '');
+
+  const url =
+    `${baseUrl}/models/${model}:streamGenerateContent` +
+    `?alt=sse&key=${encodeURIComponent(provider.apiKey)}`;
+
   const { system, rest } = splitSystemPrompt(messages);
 
   const body = {
-    contents: rest.map((m) => ({
-      role: m.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: m.content }],
+    contents: rest.map((message) => ({
+      role: message.role === 'assistant' ? 'model' : 'user',
+      parts: toGeminiParts(message.content),
     })),
-    systemInstruction: system ? { parts: [{ text: system }] } : undefined,
+    systemInstruction: system
+      ? {
+          parts: [{ text: system }],
+        }
+      : undefined,
     generationConfig: {
       temperature: settings.temperature,
       maxOutputTokens: settings.maxTokens,
@@ -292,25 +529,34 @@ async function streamGemini(opts: ChatRequestOptions): Promise<void> {
   };
 
   let response: Response;
+
   try {
     response = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+      },
       body: JSON.stringify(body),
       signal,
     });
   } catch {
-    if (signal.aborted) return;
+    if (signal.aborted) {
+      return;
+    }
+
     throw friendlyNetworkError();
   }
 
   if (!response.ok) {
-    const msg = await extractErrorMessage(response, 'Request failed');
-    throw friendlyStatusError(response.status, msg);
+    const message = await extractErrorMessage(response, 'Request failed');
+    throw friendlyStatusError(response.status, message);
   }
 
   const reader = response.body?.getReader();
-  if (!reader) throw new Error('No response body received from the server.');
+
+  if (!reader) {
+    throw new Error('No response body received from the server.');
+  }
 
   const decoder = new TextDecoder();
   let buffer = '';
@@ -318,25 +564,39 @@ async function streamGemini(opts: ChatRequestOptions): Promise<void> {
   try {
     while (true) {
       const { done, value } = await reader.read();
-      if (done) break;
+
+      if (done) {
+        break;
+      }
 
       buffer += decoder.decode(value, { stream: true });
+
       const lines = buffer.split('\n');
       buffer = lines.pop() || '';
 
       for (const line of lines) {
         const trimmed = line.trim();
-        if (!trimmed || !trimmed.startsWith('data:')) continue;
+
+        if (!trimmed || !trimmed.startsWith('data:')) {
+          continue;
+        }
 
         const data = trimmed.slice(5).trim();
-        if (!data) continue;
+
+        if (!data) {
+          continue;
+        }
 
         try {
           const parsed = JSON.parse(data);
-          const token = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
-          if (token) onToken(token);
+          const token =
+            parsed.candidates?.[0]?.content?.parts?.[0]?.text;
+
+          if (typeof token === 'string' && token) {
+            onToken(token);
+          }
         } catch {
-          // Skip malformed chunks
+          // Skip malformed streaming chunks.
         }
       }
     }
@@ -346,37 +606,57 @@ async function streamGemini(opts: ChatRequestOptions): Promise<void> {
 }
 
 async function fetchGeminiModels(provider: Provider): Promise<string[]> {
-  const base = provider.baseUrl.replace(/\/$/, '');
-  const url = `${base}/models?key=${encodeURIComponent(provider.apiKey)}`;
+  const baseUrl = provider.baseUrl.replace(/\/$/, '');
+
+  const url =
+    `${baseUrl}/models` +
+    `?key=${encodeURIComponent(provider.apiKey)}`;
+
   const response = await fetch(url);
-  if (!response.ok) throw new Error(await extractErrorMessage(response, 'Failed to fetch models'));
+
+  if (!response.ok) {
+    throw new Error(
+      await extractErrorMessage(response, 'Failed to fetch models'),
+    );
+  }
+
   const data = await response.json();
+
   const models: string[] = (data.models || [])
-    .map((m: { name?: string }) => (m.name || '').replace(/^models\//, ''))
+    .map((model: { name?: string }) =>
+      (model.name || '').replace(/^models\//, ''),
+    )
     .filter(Boolean);
+
   return models.sort();
 }
 
-// ---------- Dispatcher ----------
-
-export async function streamChatCompletion(opts: ChatRequestOptions): Promise<void> {
+export async function streamChatCompletion(
+  opts: ChatRequestOptions,
+): Promise<void> {
   switch (opts.provider.type) {
     case 'anthropic':
       return streamAnthropic(opts);
+
     case 'gemini':
       return streamGemini(opts);
+
     case 'openai':
     default:
       return streamOpenAI(opts);
   }
 }
 
-export async function fetchProviderModels(provider: Provider): Promise<string[]> {
+export async function fetchProviderModels(
+  provider: Provider,
+): Promise<string[]> {
   switch (provider.type) {
     case 'anthropic':
       return fetchAnthropicModels(provider);
+
     case 'gemini':
       return fetchGeminiModels(provider);
+
     case 'openai':
     default:
       return fetchOpenAIModels(provider);
@@ -385,15 +665,27 @@ export async function fetchProviderModels(provider: Provider): Promise<string[]>
 
 export function buildApiMessages(
   messages: Message[],
-  systemPrompt: string
-): { role: string; content: string }[] {
-  const result: { role: string; content: string }[] = [];
+  systemPrompt: string,
+): ApiMessage[] {
+  const result: ApiMessage[] = [];
+
   if (systemPrompt.trim()) {
-    result.push({ role: 'system', content: systemPrompt });
+    result.push({
+      role: 'system',
+      content: systemPrompt,
+    });
   }
-  for (const msg of messages) {
-    if (msg.error) continue;
-    result.push({ role: msg.role, content: msg.content });
+
+  for (const message of messages) {
+    if (message.error) {
+      continue;
+    }
+
+    result.push({
+      role: message.role,
+      content: message.content,
+    });
   }
+
   return result;
 }
