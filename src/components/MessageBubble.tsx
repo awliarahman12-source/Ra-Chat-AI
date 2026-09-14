@@ -1,4 +1,3 @@
-```tsx
 import { useState, memo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -245,7 +244,7 @@ export const MessageBubble = memo(function MessageBubble({
                     ),
 
                     a: ({ children, href }) => (
-                      <a
+                      
                         href={href}
                         target="_blank"
                         rel="noopener noreferrer"
@@ -342,4 +341,3 @@ export const MessageBubble = memo(function MessageBubble({
     </div>
   );
 });
-```
