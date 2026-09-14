@@ -1,7 +1,7 @@
-import type { Message, Provider, AppSettings } from '@/types';
+import type { ToolDefinition } from '@/plugins/types';
 
 interface ChatRequestOptions {
-  messages: { role: string; content: string }[];
+  messages: Record<string, unknown>[];
   provider: Provider;
   model: string;
   settings: AppSettings;
