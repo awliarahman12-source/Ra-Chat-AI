@@ -66,18 +66,27 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       }));
     });
 
-    supabase.auth.onAuthStateChange(async (event, session) => {
-      if (event === 'PASSWORD_RECOVERY') {
-        set({ recoveryMode: true, session, user: session?.user ?? null });
-        return;
-      }
-      const uname = session ? await fetchUsername(session.user.id) : null;
-      set({
-        session,
-        user: session?.user ?? null,
-        username: uname,
-        status: session ? 'signed-in' : 'signed-out',
-      });
+    supabase.auth.onAuthStateChange((event, session) => {
+      // IMPORTANT: never `await` other Supabase calls directly inside this
+      // callback. Supabase holds an internal lock while it fires this event
+      // (e.g. from setSession()/signInWithPassword()) and waits for every
+      // listener to finish before releasing it — if a listener awaits
+      // another Supabase call that needs that same lock, both sides wait on
+      // each other forever. Deferring with setTimeout lets the triggering
+      // call finish and release the lock first, then this runs right after.
+      setTimeout(async () => {
+        if (event === 'PASSWORD_RECOVERY') {
+          set({ recoveryMode: true, session, user: session?.user ?? null });
+          return;
+        }
+        const uname = session ? await fetchUsername(session.user.id) : null;
+        set({
+          session,
+          user: session?.user ?? null,
+          username: uname,
+          status: session ? 'signed-in' : 'signed-out',
+        });
+      }, 0);
     });
   },
 
