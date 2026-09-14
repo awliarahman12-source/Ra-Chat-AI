@@ -19,6 +19,16 @@ body {
   overscroll-behavior: none;
 }
 
+/* Mobile Safari in particular will happily let the whole page scroll
+   sideways if even one descendant (a code block, an unbroken long word/URL)
+   computes slightly wider than the viewport. Everything inside is already
+   meant to wrap or scroll internally (see chat-scroll / code block
+   overflow-x-auto), so clip at the document level as a safety net. */
+html, body {
+  overflow-x: hidden;
+  max-width: 100vw;
+}
+
 /* Custom scrollbar */
 .chat-scroll::-webkit-scrollbar,
 .sidebar-scroll::-webkit-scrollbar {

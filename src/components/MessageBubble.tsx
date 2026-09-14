@@ -83,7 +83,7 @@ export const MessageBubble = memo(function MessageBubble({
               <span>{message.content}</span>
             </div>
           ) : (
-            <div className="bg-white dark:bg-neutral-800/50 border border-neutral-200 dark:border-neutral-700/50 text-neutral-800 dark:text-neutral-100 rounded-2xl rounded-tl-md px-4 py-3 text-sm sm:text-base leading-relaxed">
+            <div className="bg-white dark:bg-neutral-800/50 border border-neutral-200 dark:border-neutral-700/50 text-neutral-800 dark:text-neutral-100 rounded-2xl rounded-tl-md px-4 py-3 text-sm sm:text-base leading-relaxed break-words">
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 rehypePlugins={[rehypeHighlight]}
@@ -162,7 +162,7 @@ export const MessageBubble = memo(function MessageBubble({
                 </button>
               )}
               {message.model && (
-                <span className="text-[11px] text-neutral-400 dark:text-neutral-500 ml-1.5 font-mono">
+                <span className="text-[11px] text-neutral-400 dark:text-neutral-500 ml-1.5 font-mono truncate">
                   {message.model}
                 </span>
               )}
