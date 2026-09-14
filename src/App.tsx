@@ -33,7 +33,7 @@ function App() {
   }, [conversations.length, activeConversationId, createConversation]);
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-white dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100">
+    <div className="flex h-dvh w-screen overflow-hidden bg-white dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100">
       <Sidebar />
       <ChatWindow />
       <SettingsModal />
