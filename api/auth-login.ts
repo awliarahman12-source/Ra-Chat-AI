@@ -1,4 +1,4 @@
-import { getAdminClient, getAnonClient, normalizeUsername } from './_lib/supabaseAdmin';
+import { getAdminClient, getAnonClient, normalizeUsername } from './_lib/supabaseAdmin.js';
 
 interface ApiRequest { method?: string; body?: unknown; }
 interface ApiResponse { status: (code: number) => ApiResponse; json: (data: unknown) => void; }
