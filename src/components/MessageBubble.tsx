@@ -245,10 +245,10 @@ export const MessageBubble = memo(function MessageBubble({
 
                     a: ({ children, href }) => (
                       <a href={href} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">
-                        {children}
+                      {children}
                       </a>
                     ),
-
+                    
                     ul: ({ children }) => (
                       <ul className="list-disc pl-5 my-2 space-y-1">
                         {children}
