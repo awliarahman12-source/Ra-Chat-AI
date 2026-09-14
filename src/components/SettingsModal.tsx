@@ -18,6 +18,8 @@ import {
   AlertTriangle,
   Cloud,
   Mail,
+  User,
+  KeyRound,
   LogOut,
   Loader2,
 } from 'lucide-react';
@@ -516,26 +518,55 @@ function ProviderForm({ initial, onSave, onCancel, onDelete, addToast }: Provide
 function CloudSyncSection({ addToast }: { addToast: (type: 'success' | 'error' | 'info', message: string) => void }) {
   const status = useAuthStore((s) => s.status);
   const user = useAuthStore((s) => s.user);
-  const emailSent = useAuthStore((s) => s.emailSent);
+  const username = useAuthStore((s) => s.username);
   const error = useAuthStore((s) => s.error);
-  const signInWithEmail = useAuthStore((s) => s.signInWithEmail);
+  const info = useAuthStore((s) => s.info);
+  const login = useAuthStore((s) => s.login);
+  const register = useAuthStore((s) => s.register);
+  const requestPasscodeReset = useAuthStore((s) => s.requestPasscodeReset);
   const signOut = useAuthStore((s) => s.signOut);
-  const resetEmailSent = useAuthStore((s) => s.resetEmailSent);
-  const [email, setEmail] = useState('');
-  const [sending, setSending] = useState(false);
+  const clearMessages = useAuthStore((s) => s.clearMessages);
 
-  const handleSend = async () => {
-    setSending(true);
-    await signInWithEmail(email);
-    setSending(false);
+  const [mode, setMode] = useState<'login' | 'register' | 'forgot'>('login');
+  const [usernameInput, setUsernameInput] = useState('');
+  const [emailInput, setEmailInput] = useState('');
+  const [passcodeInput, setPasscodeInput] = useState('');
+  const [confirmInput, setConfirmInput] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  const switchMode = (next: 'login' | 'register' | 'forgot') => {
+    setMode(next);
+    clearMessages();
+  };
+
+  const handleSubmit = async () => {
+    setSubmitting(true);
+    if (mode === 'login') {
+      const ok = await login(usernameInput, passcodeInput);
+      if (ok) addToast('success', 'Signed in.');
+    } else if (mode === 'register') {
+      if (passcodeInput !== confirmInput) {
+        useAuthStore.setState({ error: 'Passcodes do not match.' });
+        setSubmitting(false);
+        return;
+      }
+      const ok = await register(usernameInput, emailInput, passcodeInput);
+      if (ok) addToast('success', 'Account created and signed in.');
+    } else {
+      await requestPasscodeReset(usernameInput);
+    }
+    setSubmitting(false);
   };
 
   const handleSignOut = async () => {
     await signOut();
-    resetEmailSent();
-    setEmail('');
     addToast('info', 'Signed out. Your data on this device stays put — cloud sync just pauses.');
   };
+
+  const canSubmit =
+    usernameInput.trim() &&
+    (mode === 'forgot' || passcodeInput) &&
+    (mode !== 'register' || emailInput.trim());
 
   return (
     <div className="pb-5 border-b border-neutral-200 dark:border-neutral-700">
@@ -546,9 +577,10 @@ function CloudSyncSection({ addToast }: { addToast: (type: 'success' | 'error' |
 
       {!isSupabaseConfigured && (
         <p className="text-xs text-neutral-400">
-          Not set up yet. Add <code className="px-1 py-0.5 rounded bg-neutral-100 dark:bg-neutral-800">VITE_SUPABASE_URL</code> and{' '}
-          <code className="px-1 py-0.5 rounded bg-neutral-100 dark:bg-neutral-800">VITE_SUPABASE_ANON_KEY</code> as environment variables
-          (Vercel → Project Settings → Environment Variables) and redeploy to sync chats across devices.
+          Not set up yet. Add <code className="px-1 py-0.5 rounded bg-neutral-100 dark:bg-neutral-800">VITE_SUPABASE_URL</code>,{' '}
+          <code className="px-1 py-0.5 rounded bg-neutral-100 dark:bg-neutral-800">VITE_SUPABASE_ANON_KEY</code>, and{' '}
+          <code className="px-1 py-0.5 rounded bg-neutral-100 dark:bg-neutral-800">SUPABASE_SERVICE_ROLE_KEY</code> as environment
+          variables (Vercel → Project Settings → Environment Variables) and redeploy to sync chats across devices.
         </p>
       )}
 
@@ -559,56 +591,112 @@ function CloudSyncSection({ addToast }: { addToast: (type: 'success' | 'error' |
         </div>
       )}
 
-      {isSupabaseConfigured && status === 'signed-in' && user && (
-        <div className="flex items-center justify-between gap-3">
-          <div className="text-sm text-neutral-600 dark:text-neutral-300 truncate">
-            Signed in as <span className="font-medium">{user.email}</span>
-          </div>
-          <button
-            onClick={handleSignOut}
-            className="flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-700 transition-colors"
-          >
-            <LogOut className="w-3.5 h-3.5" />
-            Sign Out
-          </button>
-        </div>
-      )}
       {isSupabaseConfigured && status === 'signed-in' && (
-        <p className="text-xs text-neutral-400 mt-1.5">Your chats and providers sync automatically across every device you sign in on.</p>
+        <div>
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-sm text-neutral-600 dark:text-neutral-300 truncate">
+              Signed in as <span className="font-medium">{username || user?.email}</span>
+            </div>
+            <button
+              onClick={handleSignOut}
+              className="flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-700 transition-colors"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              Sign Out
+            </button>
+          </div>
+          <p className="text-xs text-neutral-400 mt-1.5">Your chats and providers sync automatically across every device you sign in on.</p>
+        </div>
       )}
 
       {isSupabaseConfigured && status === 'signed-out' && (
         <div>
-          {emailSent ? (
-            <p className="text-sm text-emerald-600 dark:text-emerald-400">
-              Check your inbox — click the link we sent to sign in on this device.
-            </p>
-          ) : (
-            <>
-              <p className="text-xs text-neutral-400 mb-2">Sign in with a magic link to sync your chats and providers across devices.</p>
-              <div className="flex gap-2">
-                <div className="relative flex-1">
-                  <Mail className="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-400" />
-                  <input
-                    type="email"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && !sending && handleSend()}
-                    placeholder="you@email.com"
-                    className="w-full pl-8 pr-3 py-2 text-sm rounded-lg bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 text-neutral-800 dark:text-neutral-100 focus:outline-none focus:ring-2 focus:ring-neutral-300 dark:focus:ring-neutral-600"
-                  />
-                </div>
-                <button
-                  onClick={handleSend}
-                  disabled={sending || !email.trim()}
-                  className="flex-shrink-0 px-3 py-2 text-sm font-medium rounded-lg bg-neutral-800 dark:bg-neutral-100 text-white dark:text-neutral-900 disabled:opacity-40 hover:bg-neutral-700 dark:hover:bg-white transition-colors"
-                >
-                  {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Send link'}
-                </button>
+          <div className="flex gap-1 mb-3 p-0.5 bg-neutral-100 dark:bg-neutral-800 rounded-lg w-fit">
+            {(['login', 'register', 'forgot'] as const).map((m) => (
+              <button
+                key={m}
+                onClick={() => switchMode(m)}
+                className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${
+                  mode === m
+                    ? 'bg-white dark:bg-neutral-700 text-neutral-800 dark:text-neutral-100 shadow-sm'
+                    : 'text-neutral-500 dark:text-neutral-400'
+                }`}
+              >
+                {m === 'login' ? 'Sign In' : m === 'register' ? 'Register' : 'Forgot?'}
+              </button>
+            ))}
+          </div>
+
+          <div className="space-y-2">
+            <div className="relative">
+              <User className="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-400" />
+              <input
+                value={usernameInput}
+                onChange={(e) => setUsernameInput(e.target.value)}
+                placeholder="Username"
+                className="w-full pl-8 pr-3 py-2 text-sm rounded-lg bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 text-neutral-800 dark:text-neutral-100 focus:outline-none focus:ring-2 focus:ring-neutral-300 dark:focus:ring-neutral-600"
+              />
+            </div>
+
+            {mode === 'register' && (
+              <div className="relative">
+                <Mail className="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-400" />
+                <input
+                  type="email"
+                  value={emailInput}
+                  onChange={(e) => setEmailInput(e.target.value)}
+                  placeholder="Email (for passcode recovery only)"
+                  className="w-full pl-8 pr-3 py-2 text-sm rounded-lg bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 text-neutral-800 dark:text-neutral-100 focus:outline-none focus:ring-2 focus:ring-neutral-300 dark:focus:ring-neutral-600"
+                />
               </div>
-            </>
+            )}
+
+            {mode !== 'forgot' && (
+              <div className="relative">
+                <KeyRound className="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-400" />
+                <input
+                  type="password"
+                  value={passcodeInput}
+                  onChange={(e) => setPasscodeInput(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && !submitting && canSubmit && handleSubmit()}
+                  placeholder="Passcode"
+                  className="w-full pl-8 pr-3 py-2 text-sm rounded-lg bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 text-neutral-800 dark:text-neutral-100 focus:outline-none focus:ring-2 focus:ring-neutral-300 dark:focus:ring-neutral-600"
+                />
+              </div>
+            )}
+
+            {mode === 'register' && (
+              <div className="relative">
+                <KeyRound className="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-400" />
+                <input
+                  type="password"
+                  value={confirmInput}
+                  onChange={(e) => setConfirmInput(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && !submitting && canSubmit && handleSubmit()}
+                  placeholder="Confirm passcode"
+                  className="w-full pl-8 pr-3 py-2 text-sm rounded-lg bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 text-neutral-800 dark:text-neutral-100 focus:outline-none focus:ring-2 focus:ring-neutral-300 dark:focus:ring-neutral-600"
+                />
+              </div>
+            )}
+
+            <button
+              onClick={handleSubmit}
+              disabled={submitting || !canSubmit}
+              className="w-full py-2 text-sm font-medium rounded-lg bg-neutral-800 dark:bg-neutral-100 text-white dark:text-neutral-900 disabled:opacity-40 hover:bg-neutral-700 dark:hover:bg-white transition-colors flex items-center justify-center gap-2"
+            >
+              {submitting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+              {mode === 'login' ? 'Sign In' : mode === 'register' ? 'Create Account' : 'Send Reset Link'}
+            </button>
+          </div>
+
+          {info && <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-2">{info}</p>}
+          {error && <p className="text-xs text-red-500 mt-2">{error}</p>}
+
+          {mode === 'register' && (
+            <p className="text-[11px] text-neutral-400 mt-2">
+              Your email is only ever used to send you a reset link if you forget your passcode — it's never shown elsewhere in the app.
+            </p>
           )}
-          {error && <p className="text-xs text-red-500 mt-1.5">{error}</p>}
         </div>
       )}
     </div>

@@ -5,6 +5,7 @@ import { Sidebar } from '@/components/Sidebar';
 import { ChatWindow } from '@/components/ChatWindow';
 import { SettingsModal } from '@/components/SettingsModal';
 import { ToastContainer } from '@/components/Toast';
+import { PasscodeRecoveryModal } from '@/components/PasscodeRecoveryModal';
 
 function App() {
   const theme = useChatStore((s) => s.settings.theme);
@@ -37,6 +38,7 @@ function App() {
       <ChatWindow />
       <SettingsModal />
       <ToastContainer />
+      <PasscodeRecoveryModal />
     </div>
   );
 }
