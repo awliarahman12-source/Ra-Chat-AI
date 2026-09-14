@@ -142,7 +142,7 @@ export function ChatWindow() {
 
 function ChatHeader({ onMenuClick }: { onMenuClick: () => void }) {
   return (
-    <header className="flex items-center gap-2 px-3 sm:px-4 py-2.5 border-b border-neutral-200 dark:border-neutral-800 bg-white/80 dark:bg-neutral-950/80 backdrop-blur-sm sticky top-0 z-10">
+    <header className="flex items-center gap-2 px-3 sm:px-4 pt-safe pb-2.5 border-b border-neutral-200 dark:border-neutral-800 bg-white/80 dark:bg-neutral-950/80 backdrop-blur-sm sticky top-0 z-10">
       <button
         onClick={onMenuClick}
         className="lg:hidden p-2 rounded-lg hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-600 dark:text-neutral-300"

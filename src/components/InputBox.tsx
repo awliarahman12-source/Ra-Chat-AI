@@ -22,9 +22,15 @@ export function InputBox() {
     adjustHeight();
   }, [input, adjustHeight]);
 
-  // Focus when conversation changes
+  // Focus when conversation changes — but not on touch devices, where
+  // auto-focusing pops the on-screen keyboard open on every navigation,
+  // which is jarring rather than helpful.
   useEffect(() => {
-    textareaRef.current?.focus();
+    const isTouchDevice =
+      typeof window !== 'undefined' && (navigator.maxTouchPoints > 0 || 'ontouchstart' in window);
+    if (!isTouchDevice) {
+      textareaRef.current?.focus();
+    }
   }, [activeConversationId]);
 
   const handleSend = () => {
@@ -43,7 +49,7 @@ export function InputBox() {
   };
 
   return (
-    <div className="px-3 sm:px-4 pb-3 sm:pb-4 pt-1 bg-gradient-to-t from-white dark:from-neutral-950 via-white dark:via-neutral-950 to-transparent">
+    <div className="px-3 sm:px-4 pb-safe pt-1 bg-gradient-to-t from-white dark:from-neutral-950 via-white dark:via-neutral-950 to-transparent">
       <div className="max-w-3xl mx-auto">
         <div className="relative flex items-end gap-2 rounded-2xl border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-900 px-3 py-2 focus-within:ring-2 focus-within:ring-neutral-300 dark:focus-within:ring-neutral-600 transition-all">
           <textarea

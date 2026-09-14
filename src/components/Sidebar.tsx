@@ -69,7 +69,7 @@ export function Sidebar() {
   const sidebarContent = (
     <div className="flex flex-col h-full bg-neutral-50 dark:bg-neutral-900 border-r border-neutral-200 dark:border-neutral-800 w-72">
       {/* Header */}
-      <div className="p-3 flex items-center justify-between">
+      <div className="p-3 pt-safe flex items-center justify-between">
         <span className="text-lg font-bold text-neutral-800 dark:text-neutral-100 tracking-tight">AI Chat</span>
         <button
           onClick={() => setSidebarOpen(false)}
@@ -169,7 +169,7 @@ export function Sidebar() {
       </div>
 
       {/* Footer */}
-      <div className="border-t border-neutral-200 dark:border-neutral-800 p-3 space-y-2">
+      <div className="border-t border-neutral-200 dark:border-neutral-800 p-3 pb-safe space-y-2">
         <div className="flex items-center justify-between px-2 text-xs text-neutral-400 dark:text-neutral-500">
           <span>{activeProviderCount} active provider{activeProviderCount !== 1 ? 's' : ''}</span>
         </div>
