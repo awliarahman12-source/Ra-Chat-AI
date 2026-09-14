@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { useChatStore } from '@/store/chatStore';
+import { useCloudSync } from '@/hooks/useCloudSync';
 import { Sidebar } from '@/components/Sidebar';
 import { ChatWindow } from '@/components/ChatWindow';
 import { SettingsModal } from '@/components/SettingsModal';
@@ -10,6 +11,8 @@ function App() {
   const conversations = useChatStore((s) => s.conversations);
   const activeConversationId = useChatStore((s) => s.activeConversationId);
   const createConversation = useChatStore((s) => s.createConversation);
+
+  useCloudSync();
 
   // Apply theme to document
   useEffect(() => {

@@ -13,6 +13,40 @@ function friendlyNetworkError(): Error {
   return new Error('Network error: Unable to reach the AI provider. Check your internet connection or base URL.');
 }
 
+/**
+ * Calls `fetch` directly first. If that fails at the network level (which is
+ * the symptom of a CORS block — the browser refuses to even send the
+ * request), retries once through our own same-origin serverless proxy
+ * (`/api/ai-proxy`, only present when deployed on Vercel). Real HTTP error
+ * responses (401, 429, 500, ...) are NOT retried here — those come back as
+ * normal Response objects, not thrown errors, so they skip straight to the
+ * caller's own error handling.
+ */
+async function fetchWithCorsFallback(url: string, options: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, options);
+  } catch (err) {
+    const signal = options.signal as AbortSignal | undefined;
+    if (signal?.aborted) throw err;
+
+    try {
+      return await fetch('/api/ai-proxy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url,
+          method: options.method || 'GET',
+          headers: options.headers,
+          body: typeof options.body === 'string' ? JSON.parse(options.body) : undefined,
+        }),
+        signal,
+      });
+    } catch {
+      throw friendlyNetworkError();
+    }
+  }
+}
+
 function friendlyStatusError(status: number, fallback: string): Error {
   if (status === 401 || status === 403) {
     return new Error('Authentication failed: Check your API key for this provider.');
@@ -74,7 +108,7 @@ async function streamOpenAI(opts: ChatRequestOptions): Promise<void> {
 
   let response: Response;
   try {
-    response = await fetch(url, {
+    response = await fetchWithCorsFallback(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -83,9 +117,9 @@ async function streamOpenAI(opts: ChatRequestOptions): Promise<void> {
       body: JSON.stringify(body),
       signal,
     });
-  } catch {
+  } catch (err) {
     if (signal.aborted) return;
-    throw friendlyNetworkError();
+    throw err instanceof Error ? err : friendlyNetworkError();
   }
 
   if (!response.ok) {
@@ -131,7 +165,7 @@ async function streamOpenAI(opts: ChatRequestOptions): Promise<void> {
 
 async function fetchOpenAIModels(provider: Provider): Promise<string[]> {
   const url = `${provider.baseUrl.replace(/\/$/, '')}/models`;
-  const response = await fetch(url, {
+  const response = await fetchWithCorsFallback(url, {
     headers: provider.apiKey ? { Authorization: `Bearer ${provider.apiKey}` } : {},
   });
   if (!response.ok) throw new Error(await extractErrorMessage(response, 'Failed to fetch models'));
