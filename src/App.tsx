@@ -15,9 +15,9 @@ function App() {
 
   useCloudSync();
 
+  // Apply theme to document
   useEffect(() => {
     const root = document.documentElement;
-
     if (theme === 'dark') {
       root.classList.add('dark');
     } else {
@@ -25,6 +25,7 @@ function App() {
     }
   }, [theme]);
 
+  // Create an initial conversation on first load if none exists
   useEffect(() => {
     if (conversations.length === 0 && !activeConversationId) {
       createConversation();
@@ -32,13 +33,9 @@ function App() {
   }, [conversations.length, activeConversationId, createConversation]);
 
   return (
-    <div className="flex h-[100dvh] w-full min-w-0 overflow-hidden bg-white text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100">
+    <div className="flex h-screen w-screen overflow-hidden bg-white dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100">
       <Sidebar />
-
-      <main className="min-h-0 min-w-0 flex-1 overflow-hidden">
-        <ChatWindow />
-      </main>
-
+      <ChatWindow />
       <SettingsModal />
       <ToastContainer />
       <PasscodeRecoveryModal />
