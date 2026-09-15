@@ -14,7 +14,6 @@ export interface TextContentPart {
 
 /**
  * Bagian konten berupa gambar (format OpenAI/OpenRouter).
- * url harus berupa Data URL (data:image/...;base64,xxx) atau URL publik.
  */
 export interface ImageContentPart {
   type: 'image_url';
@@ -31,16 +30,41 @@ export interface ImageContentPart {
 export type MessageContent = string | Array<TextContentPart | ImageContentPart>;
 
 // ============================================================
-// ATTACHMENT (untuk UI & storage, bukan untuk dikirim ke API)
+// ATTACHMENT
 // ============================================================
 
-export interface Attachment {
+/**
+ * Attachment berupa gambar. Dikirim ke API sebagai part `image_url`.
+ */
+export interface ImageAttachment {
   id: string;
+  kind: 'image';
   name: string;
-  mimeType: string;      // contoh: "image/png"
-  size: number;          // ukuran dalam bytes
-  dataUrl: string;       // data:image/png;base64,....
+  mimeType: string;   // contoh: "image/png"
+  size: number;       // ukuran dalam bytes
+  dataUrl: string;    // data:image/png;base64,....
 }
+
+/**
+ * Attachment berupa file teks / kode / hasil extract ZIP.
+ * Isinya (extractedText) dikirim ke API sebagai bagian dari teks pesan.
+ */
+export interface TextAttachment {
+  id: string;
+  kind: 'text';
+  name: string;
+  mimeType: string;
+  size: number;
+  extractedText: string;      // isi teks setelah extract
+  truncated?: boolean;        // true kalau terpotong karena limit
+  filesIncluded?: string[];   // daftar file (khusus ZIP)
+}
+
+/**
+ * Union: attachment bisa gambar ATAU teks.
+ * Gunakan field `kind` untuk membedakan.
+ */
+export type Attachment = ImageAttachment | TextAttachment;
 
 // ============================================================
 // MESSAGE
@@ -56,9 +80,8 @@ export interface Message {
   error?: boolean;
 
   /**
-   * Daftar attachment (gambar) yang dikirim user.
+   * Daftar attachment yang dikirim user.
    * Dipakai untuk render preview di UI.
-   * Format untuk API tetap diambil dari `content`.
    */
   attachments?: Attachment[];
 }
