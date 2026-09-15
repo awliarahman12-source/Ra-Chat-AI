@@ -1,27 +1,36 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { streamChatCompletion, buildApiMessages } from '@/api/chat';
-import type { Conversation, Message, Provider, AppSettings, ToastMessage } from '@/types';
+import type {
+  Conversation,
+  Message,
+  MessageContent,
+  Provider,
+  AppSettings,
+  ToastMessage,
+  Attachment,
+  Role,
+} from '@/types';
 
-const STORAGE_VERSION = 2;
+const STORAGE_VERSION = 1;
 
-export type AttachmentKind = 'image' | 'text';
-
-export interface ChatAttachment {
-  id: string;
-  name: string;
-  type: string;
-  size: number;
-  kind: AttachmentKind;
-  dataUrl?: string;
-  textContent?: string;
-  previewUrl?: string;
-}
-
+// Kept outside the persisted state on purpose: an AbortController isn't
+// serializable and doesn't need to survive a reload — only one stream can be
+// active at a time, so a single module-level reference is enough.
 let activeAbortController: AbortController | null = null;
 
 function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+/**
+ * Ambil teks dari MessageContent (string atau array part).
+ * Dipakai untuk auto-title dan fallback.
+ */
+function extractText(content: MessageContent): string {
+  if (typeof content === 'string') return content;
+  const textPart = content.find((p) => p.type === 'text');
+  return textPart && textPart.type === 'text' ? textPart.text : '';
 }
 
 function createDefaultProvider(): Provider {
@@ -46,11 +55,6 @@ function createDefaultSettings(): AppSettings {
   };
 }
 
-type MultimodalMessage = {
-  role: string;
-  content: string | Array<Record<string, unknown>>;
-};
-
 interface ChatState {
   conversations: Conversation[];
   activeConversationId: string | null;
@@ -62,23 +66,27 @@ interface ChatState {
   settingsOpen: boolean;
   searchQuery: string;
 
+  // Conversation actions
   createConversation: (providerId?: string, model?: string) => string;
   deleteConversation: (id: string) => void;
   renameConversation: (id: string, title: string) => void;
   setActiveConversation: (id: string) => void;
   addMessage: (conversationId: string, message: Message) => void;
-  updateMessage: (conversationId: string, messageId: string, content: string) => void;
+  updateMessage: (conversationId: string, messageId: string, content: MessageContent) => void;
   setConversationModel: (conversationId: string, providerId: string, model: string) => void;
   clearAllConversations: () => void;
 
+  // Provider actions
   addProvider: (provider: Omit<Provider, 'id'>) => string;
   updateProvider: (id: string, updates: Partial<Provider>) => void;
   deleteProvider: (id: string) => void;
   setDefaultProvider: (id: string) => void;
   toggleProviderActive: (id: string) => void;
 
+  // Settings actions
   updateSettings: (updates: Partial<AppSettings>) => void;
 
+  // UI actions
   setStreaming: (streaming: boolean) => void;
   setSidebarOpen: (open: boolean) => void;
   setSettingsOpen: (open: boolean) => void;
@@ -86,100 +94,33 @@ interface ChatState {
   addToast: (type: ToastMessage['type'], message: string) => void;
   removeToast: (id: string) => void;
 
-  sendMessage: (
-    content: string,
-    attachments?: ChatAttachment[],
-  ) => Promise<void>;
+  // Completion actions (send / regenerate / stop share the same streaming logic)
+  sendMessage: (content: string, attachments?: Attachment[]) => Promise<void>;
   regenerateResponse: () => Promise<void>;
   stopStreaming: () => void;
 }
 
 function resolveProvider(providers: Provider[], preferredId?: string) {
   return (
-    providers.find((provider) => provider.id === preferredId && provider.isActive) ||
-    providers.find((provider) => provider.isDefault && provider.isActive) ||
-    providers.find((provider) => provider.isActive)
+    providers.find((p) => p.id === preferredId && p.isActive) ||
+    providers.find((p) => p.isDefault && p.isActive) ||
+    providers.find((p) => p.isActive)
   );
-}
-
-function getMessageAttachments(message: Message): ChatAttachment[] {
-  const messageWithAttachments = message as Message & {
-    attachments?: ChatAttachment[];
-  };
-
-  return messageWithAttachments.attachments || [];
-}
-
-function createMultimodalMessages(
-  messages: Message[],
-  systemPrompt: string,
-): MultimodalMessage[] {
-  const apiMessages = buildApiMessages(messages, systemPrompt) as MultimodalMessage[];
-
-  return apiMessages.map((apiMessage, index) => {
-    const sourceMessage = messages[index - 1];
-
-    if (!sourceMessage || sourceMessage.role !== 'user') {
-      return apiMessage;
-    }
-
-    const attachments = getMessageAttachments(sourceMessage);
-
-    if (attachments.length === 0) {
-      return apiMessage;
-    }
-
-    const contentParts: Array<Record<string, unknown>> = [];
-
-    if (typeof apiMessage.content === 'string') {
-      contentParts.push({
-        type: 'text',
-        text: apiMessage.content || 'Analyze the attached files.',
-      });
-    } else {
-      contentParts.push(...apiMessage.content);
-    }
-
-    for (const attachment of attachments) {
-      if (attachment.kind === 'image' && attachment.dataUrl) {
-        contentParts.push({
-          type: 'image_url',
-          image_url: {
-            url: attachment.dataUrl,
-          },
-        });
-      }
-
-      if (attachment.kind === 'text' && attachment.textContent) {
-        contentParts.push({
-          type: 'text',
-          text:
-            `\n\n--- File: ${attachment.name} (${attachment.type}) ---\n` +
-            attachment.textContent +
-            `\n--- End file: ${attachment.name} ---`,
-        });
-      }
-    }
-
-    return {
-      ...apiMessage,
-      content: contentParts,
-    };
-  });
 }
 
 export const useChatStore = create<ChatState>()(
   persist(
     (set, get) => {
+      // Shared by sendMessage and regenerateResponse: runs the actual
+      // provider request, streaming tokens into the given assistant message.
       const runCompletion = async (
         conversationId: string,
         assistantId: string,
-        apiMessages: MultimodalMessage[],
+        apiMessages: { role: Role; content: MessageContent }[],
         provider: Provider,
-        model: string,
+        model: string
       ) => {
         set({ isStreaming: true });
-
         const controller = new AbortController();
         activeAbortController = controller;
 
@@ -191,46 +132,27 @@ export const useChatStore = create<ChatState>()(
             settings: get().settings,
             signal: controller.signal,
             onToken: (token) => {
-              const currentConversation = get().conversations.find(
-                (conversation) => conversation.id === conversationId,
-              );
-
-              const currentMessage = currentConversation?.messages.find(
-                (message) => message.id === assistantId,
-              );
-
-              get().updateMessage(
-                conversationId,
-                assistantId,
-                `${currentMessage?.content || ''}${token}`,
-              );
+              const currentConv = get().conversations.find((c) => c.id === conversationId);
+              const currentMsg = currentConv?.messages.find((m) => m.id === assistantId);
+              // Assistant messages are always text-only, so content stays a string.
+              const prev = typeof currentMsg?.content === 'string' ? currentMsg.content : '';
+              get().updateMessage(conversationId, assistantId, prev + token);
             },
           });
-        } catch (error) {
-          if (!controller.signal.aborted) {
-            const errorMessage =
-              error instanceof Error
-                ? error.message
-                : 'An unexpected error occurred.';
-
-            get().updateMessage(conversationId, assistantId, errorMessage);
-
+        } catch (err) {
+          if (controller.signal.aborted) {
+            // Partial response stays as-is.
+          } else {
+            const errorMsg = err instanceof Error ? err.message : 'An unexpected error occurred.';
+            get().updateMessage(conversationId, assistantId, errorMsg);
             set((state) => ({
-              conversations: state.conversations.map((conversation) =>
-                conversation.id === conversationId
-                  ? {
-                      ...conversation,
-                      messages: conversation.messages.map((message) =>
-                        message.id === assistantId
-                          ? { ...message, error: true }
-                          : message,
-                      ),
-                    }
-                  : conversation,
+              conversations: state.conversations.map((c) =>
+                c.id === conversationId
+                  ? { ...c, messages: c.messages.map((m) => (m.id === assistantId ? { ...m, error: true } : m)) }
+                  : c
               ),
             }));
-
-            get().addToast('error', errorMessage);
+            get().addToast('error', errorMsg);
           }
         } finally {
           set({ isStreaming: false });
@@ -239,433 +161,315 @@ export const useChatStore = create<ChatState>()(
       };
 
       return {
-        conversations: [],
-        activeConversationId: null,
-        providers: [createDefaultProvider()],
-        settings: createDefaultSettings(),
-        toasts: [],
-        isStreaming: false,
-        sidebarOpen: false,
-        settingsOpen: false,
-        searchQuery: '',
+      conversations: [],
+      activeConversationId: null,
+      providers: [createDefaultProvider()],
+      settings: createDefaultSettings(),
+      toasts: [],
+      isStreaming: false,
+      sidebarOpen: false,
+      settingsOpen: false,
+      searchQuery: '',
 
-        createConversation: (providerId, model) => {
-          const id = generateId();
+      createConversation: (providerId, model) => {
+        const id = generateId();
+        const defaultProvider = get().providers.find((p) => p.isDefault && p.isActive) || get().providers.find((p) => p.isActive);
+        const conversation: Conversation = {
+          id,
+          title: 'New Chat',
+          messages: [],
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          providerId: providerId || defaultProvider?.id,
+          model: model || defaultProvider?.models[0],
+        };
+        set((state) => ({
+          conversations: [conversation, ...state.conversations],
+          activeConversationId: id,
+        }));
+        return id;
+      },
 
-          const defaultProvider =
-            get().providers.find(
-              (provider) => provider.isDefault && provider.isActive,
-            ) || get().providers.find((provider) => provider.isActive);
-
-          const conversation: Conversation = {
-            id,
-            title: 'New Chat',
-            messages: [],
-            createdAt: Date.now(),
-            updatedAt: Date.now(),
-            providerId: providerId || defaultProvider?.id,
-            model: model || defaultProvider?.models[0],
+      deleteConversation: (id) => {
+        set((state) => {
+          const filtered = state.conversations.filter((c) => c.id !== id);
+          const newActive = state.activeConversationId === id
+            ? (filtered[0]?.id || null)
+            : state.activeConversationId;
+          return {
+            conversations: filtered,
+            activeConversationId: newActive,
           };
+        });
+      },
 
-          set((state) => ({
-            conversations: [conversation, ...state.conversations],
-            activeConversationId: id,
-          }));
+      renameConversation: (id, title) => {
+        set((state) => ({
+          conversations: state.conversations.map((c) =>
+            c.id === id ? { ...c, title, updatedAt: Date.now() } : c
+          ),
+        }));
+      },
 
-          return id;
-        },
+      setActiveConversation: (id) => {
+        set({ activeConversationId: id, sidebarOpen: false });
+      },
 
-        deleteConversation: (id) => {
-          set((state) => {
-            const conversations = state.conversations.filter(
-              (conversation) => conversation.id !== id,
-            );
+      addMessage: (conversationId, message) => {
+        set((state) => ({
+          conversations: state.conversations.map((c) => {
+            if (c.id !== conversationId) return c;
+            const updated = { ...c, messages: [...c.messages, message], updatedAt: Date.now() };
 
-            const activeConversationId =
-              state.activeConversationId === id
-                ? conversations[0]?.id || null
-                : state.activeConversationId;
-
-            return {
-              conversations,
-              activeConversationId,
-            };
-          });
-        },
-
-        renameConversation: (id, title) => {
-          set((state) => ({
-            conversations: state.conversations.map((conversation) =>
-              conversation.id === id
-                ? { ...conversation, title, updatedAt: Date.now() }
-                : conversation,
-            ),
-          }));
-        },
-
-        setActiveConversation: (id) => {
-          set({
-            activeConversationId: id,
-            sidebarOpen: false,
-          });
-        },
-
-        addMessage: (conversationId, message) => {
-          set((state) => ({
-            conversations: state.conversations.map((conversation) => {
-              if (conversation.id !== conversationId) {
-                return conversation;
+            // Auto-title from first user message
+            if (c.title === 'New Chat' && message.role === 'user') {
+              const text = extractText(message.content).trim();
+              if (text) {
+                updated.title = text.slice(0, 40) + (text.length > 40 ? '…' : '');
+              } else if (message.attachments && message.attachments.length > 0) {
+                updated.title =
+                  message.attachments.length === 1
+                    ? `📷 ${message.attachments[0].name}`
+                    : `📷 ${message.attachments.length} images`;
               }
-
-              const updatedConversation: Conversation = {
-                ...conversation,
-                messages: [...conversation.messages, message],
-                updatedAt: Date.now(),
-              };
-
-              if (conversation.title === 'New Chat' && message.role === 'user') {
-                const titleSource =
-                  message.content.trim() || 'Attachment conversation';
-
-                updatedConversation.title =
-                  titleSource.slice(0, 40) +
-                  (titleSource.length > 40 ? '…' : '');
-              }
-
-              return updatedConversation;
-            }),
-          }));
-        },
-
-        updateMessage: (conversationId, messageId, content) => {
-          set((state) => ({
-            conversations: state.conversations.map((conversation) =>
-              conversation.id === conversationId
-                ? {
-                    ...conversation,
-                    messages: conversation.messages.map((message) =>
-                      message.id === messageId
-                        ? { ...message, content }
-                        : message,
-                    ),
-                    updatedAt: Date.now(),
-                  }
-                : conversation,
-            ),
-          }));
-        },
-
-        setConversationModel: (conversationId, providerId, model) => {
-          set((state) => ({
-            conversations: state.conversations.map((conversation) =>
-              conversation.id === conversationId
-                ? { ...conversation, providerId, model }
-                : conversation,
-            ),
-          }));
-        },
-
-        clearAllConversations: () => {
-          set({
-            conversations: [],
-            activeConversationId: null,
-          });
-        },
-
-        addProvider: (provider) => {
-          const id = generateId();
-
-          set((state) => {
-            const isFirstProvider = state.providers.length === 0;
-
-            return {
-              providers: [
-                ...state.providers,
-                {
-                  ...provider,
-                  id,
-                  isDefault: provider.isDefault || isFirstProvider,
-                },
-              ],
-            };
-          });
-
-          return id;
-        },
-
-        updateProvider: (id, updates) => {
-          set((state) => ({
-            providers: state.providers.map((provider) =>
-              provider.id === id ? { ...provider, ...updates } : provider,
-            ),
-          }));
-        },
-
-        deleteProvider: (id) => {
-          set((state) => {
-            const providers = state.providers.filter(
-              (provider) => provider.id !== id,
-            );
-
-            const deletedWasDefault = state.providers.find(
-              (provider) => provider.id === id,
-            )?.isDefault;
-
-            if (deletedWasDefault && providers.length > 0) {
-              providers[0] = {
-                ...providers[0],
-                isDefault: true,
-              };
             }
+            return updated;
+          }),
+        }));
+      },
 
-            return { providers };
-          });
-        },
+      updateMessage: (conversationId, messageId, content) => {
+        set((state) => ({
+          conversations: state.conversations.map((c) =>
+            c.id === conversationId
+              ? {
+                  ...c,
+                  messages: c.messages.map((m) =>
+                    m.id === messageId ? { ...m, content } : m
+                  ),
+                  updatedAt: Date.now(),
+                }
+              : c
+          ),
+        }));
+      },
 
-        setDefaultProvider: (id) => {
-          set((state) => ({
-            providers: state.providers.map((provider) => ({
-              ...provider,
-              isDefault: provider.id === id,
-            })),
-          }));
-        },
+      setConversationModel: (conversationId, providerId, model) => {
+        set((state) => ({
+          conversations: state.conversations.map((c) =>
+            c.id === conversationId ? { ...c, providerId, model } : c
+          ),
+        }));
+      },
 
-        toggleProviderActive: (id) => {
-          set((state) => ({
-            providers: state.providers.map((provider) =>
-              provider.id === id
-                ? { ...provider, isActive: !provider.isActive }
-                : provider,
-            ),
-          }));
-        },
+      clearAllConversations: () => {
+        set({ conversations: [], activeConversationId: null });
+      },
 
-        updateSettings: (updates) => {
-          set((state) => ({
-            settings: {
-              ...state.settings,
-              ...updates,
-            },
-          }));
-        },
-
-        setStreaming: (streaming) => set({ isStreaming: streaming }),
-        setSidebarOpen: (open) => set({ sidebarOpen: open }),
-        setSettingsOpen: (open) => set({ settingsOpen: open }),
-        setSearchQuery: (query) => set({ searchQuery: query }),
-
-        addToast: (type, message) => {
-          const id = generateId();
-
-          set((state) => ({
-            toasts: [...state.toasts, { id, type, message }],
-          }));
-
-          setTimeout(() => {
-            set((state) => ({
-              toasts: state.toasts.filter((toast) => toast.id !== id),
-            }));
-          }, 5000);
-        },
-
-        removeToast: (id) => {
-          set((state) => ({
-            toasts: state.toasts.filter((toast) => toast.id !== id),
-          }));
-        },
-
-        sendMessage: async (content, attachments = []) => {
-          const trimmedContent = content.trim();
-
-          if (
-            (!trimmedContent && attachments.length === 0) ||
-            get().isStreaming
-          ) {
-            return;
-          }
-
-          let conversationId = get().activeConversationId;
-
-          if (!conversationId) {
-            conversationId = get().createConversation();
-          }
-
-          const conversation = get().conversations.find(
-            (item) => item.id === conversationId,
-          );
-
-          const provider = resolveProvider(
-            get().providers,
-            conversation?.providerId,
-          );
-
-          if (!provider) {
-            get().addToast(
-              'error',
-              'No active AI provider configured. Please add one in Settings.',
-            );
-            return;
-          }
-
-          if (!provider.apiKey) {
-            get().addToast(
-              'error',
-              `No API key set for "${provider.name}". Add it in Settings to start chatting.`,
-            );
-            return;
-          }
-
-          const model = conversation?.model || provider.models[0];
-
-          if (!model) {
-            get().addToast(
-              'error',
-              'No model selected. Please choose a model from the selector above.',
-            );
-            return;
-          }
-
-          const userMessage = {
-            id: generateId(),
-            role: 'user' as const,
-            content: trimmedContent,
-            createdAt: Date.now(),
-            attachments,
-          } as Message;
-
-          get().addMessage(conversationId, userMessage);
-
-          const updatedConversation = get().conversations.find(
-            (item) => item.id === conversationId,
-          );
-
-          const apiMessages = createMultimodalMessages(
-            updatedConversation?.messages || [],
-            get().settings.systemPrompt,
-          );
-
-          const assistantId = generateId();
-
-          const assistantMessage: Message = {
-            id: assistantId,
-            role: 'assistant',
-            content: '',
-            createdAt: Date.now(),
-            providerId: provider.id,
-            model,
+      addProvider: (provider) => {
+        const id = generateId();
+        set((state) => {
+          const isFirst = state.providers.length === 0;
+          return {
+            providers: [
+              ...state.providers,
+              { ...provider, id, isDefault: provider.isDefault || isFirst },
+            ],
           };
+        });
+        return id;
+      },
 
-          get().addMessage(conversationId, assistantMessage);
+      updateProvider: (id, updates) => {
+        set((state) => ({
+          providers: state.providers.map((p) =>
+            p.id === id ? { ...p, ...updates } : p
+          ),
+        }));
+      },
 
-          await runCompletion(
-            conversationId,
-            assistantId,
-            apiMessages,
-            provider,
-            model,
-          );
-        },
-
-        regenerateResponse: async () => {
-          const conversationId = get().activeConversationId;
-
-          if (!conversationId || get().isStreaming) {
-            return;
+      deleteProvider: (id) => {
+        set((state) => {
+          const filtered = state.providers.filter((p) => p.id !== id);
+          const deletedWasDefault = state.providers.find((p) => p.id === id)?.isDefault;
+          if (deletedWasDefault && filtered.length > 0) {
+            filtered[0] = { ...filtered[0], isDefault: true };
           }
+          return { providers: filtered };
+        });
+      },
 
-          const conversation = get().conversations.find(
-            (item) => item.id === conversationId,
-          );
+      setDefaultProvider: (id) => {
+        set((state) => ({
+          providers: state.providers.map((p) => ({
+            ...p,
+            isDefault: p.id === id,
+          })),
+        }));
+      },
 
-          if (!conversation || conversation.messages.length === 0) {
-            return;
+      toggleProviderActive: (id) => {
+        set((state) => ({
+          providers: state.providers.map((p) =>
+            p.id === id ? { ...p, isActive: !p.isActive } : p
+          ),
+        }));
+      },
+
+      updateSettings: (updates) => {
+        set((state) => ({ settings: { ...state.settings, ...updates } }));
+      },
+
+      setStreaming: (streaming) => set({ isStreaming: streaming }),
+      setSidebarOpen: (open) => set({ sidebarOpen: open }),
+      setSettingsOpen: (open) => set({ settingsOpen: open }),
+      setSearchQuery: (query) => set({ searchQuery: query }),
+
+      addToast: (type, message) => {
+        const id = generateId();
+        set((state) => ({ toasts: [...state.toasts, { id, type, message }] }));
+        setTimeout(() => {
+          set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) }));
+        }, 5000);
+      },
+
+      removeToast: (id) => {
+        set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) }));
+      },
+
+      // ============================================================
+      // SEND MESSAGE (with optional image attachments)
+      // ============================================================
+      sendMessage: async (content, attachments) => {
+        const trimmed = content.trim();
+        const hasAttachments = !!attachments && attachments.length > 0;
+
+        if ((!trimmed && !hasAttachments) || get().isStreaming) return;
+
+        let conversationId = get().activeConversationId;
+        if (!conversationId) {
+          conversationId = get().createConversation();
+        }
+
+        const conv = get().conversations.find((c) => c.id === conversationId);
+        const provider = resolveProvider(get().providers, conv?.providerId);
+
+        if (!provider) {
+          get().addToast('error', 'No active AI provider configured. Please add one in Settings.');
+          return;
+        }
+        if (!provider.apiKey) {
+          get().addToast('error', `No API key set for "${provider.name}". Add it in Settings to start chatting.`);
+          return;
+        }
+        const model = conv?.model || provider.models[0];
+        if (!model) {
+          get().addToast('error', 'No model selected. Please choose a model from the selector above.');
+          return;
+        }
+
+        // ---- Bangun content: string biasa atau array multimodal ----
+        let messageContent: MessageContent;
+        if (hasAttachments) {
+          const parts: Array<
+            | { type: 'text'; text: string }
+            | { type: 'image_url'; image_url: { url: string } }
+          > = [];
+
+          if (trimmed) {
+            parts.push({ type: 'text', text: trimmed });
           }
-
-          const lastMessage = conversation.messages[conversation.messages.length - 1];
-
-          if (lastMessage.role !== 'assistant') {
-            return;
+          for (const att of attachments!) {
+            parts.push({
+              type: 'image_url',
+              image_url: { url: att.dataUrl },
+            });
           }
+          messageContent = parts;
+        } else {
+          messageContent = trimmed;
+        }
 
-          const provider = resolveProvider(
-            get().providers,
-            lastMessage.providerId || conversation.providerId,
-          );
+        const userMessage: Message = {
+          id: generateId(),
+          role: 'user',
+          content: messageContent,
+          createdAt: Date.now(),
+          attachments: hasAttachments ? attachments : undefined,
+        };
+        get().addMessage(conversationId, userMessage);
 
-          if (!provider) {
-            get().addToast(
-              'error',
-              'No active AI provider configured. Please add one in Settings.',
-            );
-            return;
-          }
+        const updatedConv = get().conversations.find((c) => c.id === conversationId);
+        const apiMessages = buildApiMessages(updatedConv?.messages || [], get().settings.systemPrompt);
 
-          if (!provider.apiKey) {
-            get().addToast(
-              'error',
-              `No API key set for "${provider.name}". Add it in Settings to start chatting.`,
-            );
-            return;
-          }
+        const assistantId = generateId();
+        const assistantMessage: Message = {
+          id: assistantId,
+          role: 'assistant',
+          content: '',
+          createdAt: Date.now(),
+          providerId: provider.id,
+          model,
+        };
+        get().addMessage(conversationId, assistantMessage);
 
-          const model =
-            lastMessage.model ||
-            conversation.model ||
-            provider.models[0];
+        await runCompletion(conversationId, assistantId, apiMessages, provider, model);
+      },
 
-          if (!model) {
-            get().addToast(
-              'error',
-              'No model selected. Please choose a model from the selector above.',
-            );
-            return;
-          }
+      // ============================================================
+      // REGENERATE
+      // ============================================================
+      regenerateResponse: async () => {
+        const conversationId = get().activeConversationId;
+        if (!conversationId || get().isStreaming) return;
 
-          const priorMessages = conversation.messages.slice(0, -1);
+        const conv = get().conversations.find((c) => c.id === conversationId);
+        if (!conv || conv.messages.length === 0) return;
 
-          set((state) => ({
-            conversations: state.conversations.map((item) =>
-              item.id === conversationId
-                ? {
-                    ...item,
-                    messages: priorMessages,
-                    updatedAt: Date.now(),
-                  }
-                : item,
-            ),
-          }));
+        const lastMsg = conv.messages[conv.messages.length - 1];
+        if (lastMsg.role !== 'assistant') return;
 
-          const apiMessages = createMultimodalMessages(
-            priorMessages,
-            get().settings.systemPrompt,
-          );
+        const provider = resolveProvider(get().providers, lastMsg.providerId || conv.providerId);
+        if (!provider) {
+          get().addToast('error', 'No active AI provider configured. Please add one in Settings.');
+          return;
+        }
+        if (!provider.apiKey) {
+          get().addToast('error', `No API key set for "${provider.name}". Add it in Settings to start chatting.`);
+          return;
+        }
+        const model = lastMsg.model || conv.model || provider.models[0];
+        if (!model) {
+          get().addToast('error', 'No model selected. Please choose a model from the selector above.');
+          return;
+        }
 
-          const assistantId = generateId();
+        const priorMessages = conv.messages.slice(0, -1);
+        set((state) => ({
+          conversations: state.conversations.map((c) =>
+            c.id === conversationId ? { ...c, messages: priorMessages } : c
+          ),
+        }));
 
-          const assistantMessage: Message = {
-            id: assistantId,
-            role: 'assistant',
-            content: '',
-            createdAt: Date.now(),
-            providerId: provider.id,
-            model,
-          };
+        const apiMessages = buildApiMessages(priorMessages, get().settings.systemPrompt);
 
-          get().addMessage(conversationId, assistantMessage);
+        const assistantId = generateId();
+        const assistantMessage: Message = {
+          id: assistantId,
+          role: 'assistant',
+          content: '',
+          createdAt: Date.now(),
+          providerId: provider.id,
+          model,
+        };
+        get().addMessage(conversationId, assistantMessage);
 
-          await runCompletion(
-            conversationId,
-            assistantId,
-            apiMessages,
-            provider,
-            model,
-          );
-        },
+        await runCompletion(conversationId, assistantId, apiMessages, provider, model);
+      },
 
-        stopStreaming: () => {
-          activeAbortController?.abort();
-        },
+      stopStreaming: () => {
+        activeAbortController?.abort();
+      },
       };
     },
     {
@@ -677,6 +481,6 @@ export const useChatStore = create<ChatState>()(
         providers: state.providers,
         settings: state.settings,
       }),
-    },
-  ),
+    }
+  )
 );
