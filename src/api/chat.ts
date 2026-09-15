@@ -520,21 +520,90 @@ export async function fetchProviderModels(provider: Provider): Promise<string[]>
 // BUILD API MESSAGES
 // ============================================================
 
+/**
+ * Bangun payload messages untuk dikirim ke API.
+ *
+ * PENTING: di sini kita EXPAND `TextAttachment` (ZIP/txt) jadi bagian dari
+ * content yang dikirim ke AI. Tapi di UI, `message.content` tetap cuma
+ * teks yang user ketik (biar browser nggak lag render 200KB teks).
+ *
+ * Logic:
+ *   1. Ambil semua TextAttachment dari msg.attachments
+ *   2. Gabungin jadi satu blok teks
+ *   3. Sisipkan blok teks itu ke content:
+ *      - Kalau content string → concat
+ *      - Kalau content array (ada gambar) → gabung ke text part pertama
+ */
 export function buildApiMessages(
   messages: Message[],
   systemPrompt: string
 ): { role: Role; content: MessageContent }[] {
   const result: { role: Role; content: MessageContent }[] = [];
+
   if (systemPrompt.trim()) {
     result.push({ role: 'system', content: systemPrompt });
   }
+
   for (const msg of messages) {
     if (msg.error) continue;
-    // Skip assistant messages that are still empty (mid-stream placeholder).
+
+    // Skip assistant messages yang masih kosong (mid-stream placeholder).
     if (msg.role === 'assistant' && typeof msg.content === 'string' && !msg.content.trim()) {
       continue;
     }
-    result.push({ role: msg.role, content: msg.content });
+
+    // ============================================================
+    // EXPAND TextAttachment → jadi blok teks
+    // ============================================================
+    const textAtts = msg.attachments?.filter((a) => a.kind === 'text') ?? [];
+    const textBlock =
+      textAtts.length > 0
+        ? textAtts
+            .map((a) => `\n\n===== ATTACHMENT: ${a.name} =====\n${a.extractedText}`)
+            .join('')
+        : '';
+
+    let finalContent: MessageContent = msg.content;
+
+    if (textBlock) {
+      if (typeof finalContent === 'string') {
+        // Text-only message → concat
+        finalContent = finalContent + textBlock;
+      } else {
+        // Multimodal array → sisipin textBlock ke text part pertama
+        const existingText = finalContent
+          .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
+          .map((p) => p.text)
+          .join('\n');
+
+        const images = finalContent.filter(
+          (p): p is { type: 'image_url'; image_url: { url: string; detail?: 'auto' | 'low' | 'high' } } =>
+            p.type === 'image_url'
+        );
+
+        const newParts: Array<
+          | { type: 'text'; text: string }
+          | { type: 'image_url'; image_url: { url: string } }
+        > = [];
+
+        const combinedText = (existingText + textBlock).trim();
+        if (combinedText) {
+          newParts.push({ type: 'text', text: combinedText });
+        }
+
+        for (const img of images) {
+          newParts.push({
+            type: 'image_url',
+            image_url: { url: img.image_url.url },
+          });
+        }
+
+        finalContent = newParts;
+      }
+    }
+
+    result.push({ role: msg.role, content: finalContent });
   }
+
   return result;
 }

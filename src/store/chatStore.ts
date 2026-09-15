@@ -1,7 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { streamChatCompletion, buildApiMessages } from '@/api/chat';
-import { buildTextBlockFromAttachments } from '@/lib/fileExtractor';
 import type {
   Conversation,
   Message,
@@ -357,30 +356,24 @@ export const useChatStore = create<ChatState>()(
           // ============================================================
           // BUILD CONTENT
           // ============================================================
-          // Strategi:
-          //   - TextAttachment (txt/zip) → digabung jadi 1 blok teks di awal
-          //   - ImageAttachment → jadi part `image_url`
-          //   - Kalau ada keduanya → kirim sebagai array parts
-          //   - Kalau cuma teks → kirim sebagai string biasa (hemat token)
+          // PENTING: `message.content` di UI hanya berisi teks yang user KETIK.
+          // TextAttachment (ZIP/txt) TIDAK dimasukkan ke content — biar UI
+          // tidak render 200KB teks (yang bikin browser lag).
+          // TextAttachment akan di-expand di buildApiMessages() saat request ke API.
 
-          const textBlock = hasAttachments ? buildTextBlockFromAttachments(attachments!) : '';
           const images = hasAttachments
             ? attachments!.filter((a) => a.kind === 'image')
             : [];
 
-          // Teks final: gabungan input user + text block dari attachment
-          const fullText = (trimmed + textBlock).trim();
-
           let messageContent: MessageContent;
           if (images.length > 0) {
-            // Multimodal: array parts
             const parts: Array<
               | { type: 'text'; text: string }
               | { type: 'image_url'; image_url: { url: string } }
             > = [];
 
-            if (fullText) {
-              parts.push({ type: 'text', text: fullText });
+            if (trimmed) {
+              parts.push({ type: 'text', text: trimmed });
             }
             for (const img of images) {
               parts.push({
@@ -390,8 +383,7 @@ export const useChatStore = create<ChatState>()(
             }
             messageContent = parts;
           } else {
-            // Text-only (mungkin ada text block dari ZIP/txt)
-            messageContent = fullText;
+            messageContent = trimmed;
           }
 
           const userMessage: Message = {
