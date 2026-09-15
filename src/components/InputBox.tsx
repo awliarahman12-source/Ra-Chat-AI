@@ -1,10 +1,10 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { ArrowUp, Square, CornerDownLeft, Paperclip, X, Loader2 } from 'lucide-react';
+import { ArrowUp, Square, CornerDownLeft, Paperclip, X, Loader2, FileText, Image as ImageIcon } from 'lucide-react';
 import { useChatStore } from '@/store/chatStore';
+import { extractFile } from '@/lib/fileExtractor';
 import type { Attachment } from '@/types';
 
 const MAX_FILES = 5;
-const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
 
 export function InputBox() {
   const [input, setInput] = useState('');
@@ -50,60 +50,48 @@ export function InputBox() {
   // FILE HANDLING
   // ============================================================
 
-  const fileToAttachment = (file: File): Promise<Attachment> => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        resolve({
-          id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          name: file.name,
-          mimeType: file.type,
-          size: file.size,
-          dataUrl: reader.result as string,
-        });
-      };
-      reader.onerror = () => reject(new Error('Gagal membaca file'));
-      reader.readAsDataURL(file);
-    });
-  };
-
   const handleFilesSelected = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
 
     setFileError(null);
+
+    const remaining = MAX_FILES - attachments.length;
+    if (remaining <= 0) {
+      setFileError(`Maksimal ${MAX_FILES} file per pesan.`);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
+
+    const incoming = Array.from(files);
+    const toProcess = incoming.slice(0, remaining);
+
+    if (incoming.length > remaining) {
+      setFileError(`Hanya ${remaining} file yang ditambahkan (max ${MAX_FILES}).`);
+    }
+
     setIsProcessingFiles(true);
 
     try {
-      const incoming = Array.from(files);
+      const results = await Promise.all(toProcess.map((f) => extractFile(f)));
 
-      // Validasi: hanya gambar
-      const nonImage = incoming.find((f) => !f.type.startsWith('image/'));
-      if (nonImage) {
-        setFileError(`"${nonImage.name}" bukan file gambar.`);
-        return;
+      const succeeded: Attachment[] = [];
+      const errors: string[] = [];
+
+      for (const r of results) {
+        if (r.ok) {
+          succeeded.push(r.attachment);
+        } else {
+          errors.push(r.error);
+        }
       }
 
-      // Validasi: ukuran
-      const tooBig = incoming.find((f) => f.size > MAX_FILE_SIZE);
-      if (tooBig) {
-        setFileError(`"${tooBig.name}" terlalu besar (max 5MB).`);
-        return;
+      if (succeeded.length > 0) {
+        setAttachments((prev) => [...prev, ...succeeded]);
       }
 
-      // Validasi: jumlah total
-      const remaining = MAX_FILES - attachments.length;
-      if (remaining <= 0) {
-        setFileError(`Maksimal ${MAX_FILES} gambar.`);
-        return;
+      if (errors.length > 0) {
+        setFileError(errors.join(' · '));
       }
-
-      const toProcess = incoming.slice(0, remaining);
-      if (incoming.length > remaining) {
-        setFileError(`Hanya ${remaining} gambar yang ditambahkan (max ${MAX_FILES}).`);
-      }
-
-      const processed = await Promise.all(toProcess.map(fileToAttachment));
-      setAttachments((prev) => [...prev, ...processed]);
     } catch (err) {
       setFileError('Gagal memproses file. Coba lagi.');
       console.error(err);
@@ -142,6 +130,16 @@ export function InputBox() {
 
   const canSend = (input.trim().length > 0 || attachments.length > 0) && !isStreaming;
 
+  // ============================================================
+  // FORMAT HELPER
+  // ============================================================
+
+  const formatSize = (bytes: number): string => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
   return (
     <div className="px-3 sm:px-4 pb-safe pt-1 bg-gradient-to-t from-white dark:from-neutral-950 via-white dark:via-neutral-950 to-transparent">
       <div className="max-w-3xl mx-auto">
@@ -157,18 +155,39 @@ export function InputBox() {
         {attachments.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-2">
             {attachments.map((att) => (
-              <div
-                key={att.id}
-                className="relative group w-16 h-16 rounded-lg overflow-hidden border border-neutral-200 dark:border-neutral-700 bg-neutral-100 dark:bg-neutral-800"
-              >
-                <img
-                  src={att.dataUrl}
-                  alt={att.name}
-                  className="w-full h-full object-cover"
-                />
+              <div key={att.id} className="relative group">
+                {att.kind === 'image' ? (
+                  // === Image thumbnail ===
+                  <div className="w-20 h-20 rounded-lg overflow-hidden border border-neutral-200 dark:border-neutral-700 bg-neutral-100 dark:bg-neutral-800">
+                    <img
+                      src={att.dataUrl}
+                      alt={att.name}
+                      className="w-full h-full object-cover"
+                    />
+                  </div>
+                ) : (
+                  // === Text / ZIP card ===
+                  <div className="w-40 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-900 px-2 py-1.5 flex items-start gap-2">
+                    <div className="flex-shrink-0 w-7 h-7 rounded-md bg-blue-100 dark:bg-blue-900/40 flex items-center justify-center mt-0.5">
+                      <FileText className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[11px] font-medium text-neutral-800 dark:text-neutral-100 truncate" title={att.name}>
+                        {att.name}
+                      </div>
+                      <div className="text-[10px] text-neutral-500 dark:text-neutral-400">
+                        {formatSize(att.size)}
+                        {att.truncated && ' · terpotong'}
+                        {att.filesIncluded && ` · ${att.filesIncluded.length} file`}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Remove button */}
                 <button
                   onClick={() => handleRemoveAttachment(att.id)}
-                  className="absolute top-0.5 right-0.5 w-5 h-5 rounded-full bg-black/60 hover:bg-black/80 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                  className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-black/70 hover:bg-black text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow"
                   title="Hapus"
                 >
                   <X className="w-3 h-3" />
@@ -184,7 +203,7 @@ export function InputBox() {
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/*"
+            accept="image/*,.zip,.txt,.md,.json,.csv,.js,.jsx,.ts,.tsx,.py,.html,.css,.xml,.yml,.yaml,.log"
             multiple
             onChange={(e) => handleFilesSelected(e.target.files)}
             className="hidden"
@@ -196,7 +215,7 @@ export function InputBox() {
             onClick={() => fileInputRef.current?.click()}
             disabled={isStreaming || isProcessingFiles}
             className="flex-shrink-0 w-8 h-8 rounded-lg hover:bg-neutral-200 dark:hover:bg-neutral-700 flex items-center justify-center transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-            title="Lampirkan gambar"
+            title="Lampirkan file (gambar, ZIP, teks, kode)"
           >
             {isProcessingFiles ? (
               <Loader2 className="w-4 h-4 animate-spin text-neutral-500" />
